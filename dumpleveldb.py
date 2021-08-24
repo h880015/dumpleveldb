@@ -11,7 +11,7 @@ import snappy
 import builtins as __builtin__
 
 APP_TITLE = "Dump LevelDB"
-APP_VERSION = "v1.0"
+APP_VERSION = "v1.1"
 LDB_FOOTER_BYTES = bytes( [ 0x57, 0xFB, 0x80, 0x8B, 0x24, 0x75, 0x47, 0xDB ] )
 
 LDB_FILE_NAME_GLOB = "*.ldb"
@@ -43,16 +43,24 @@ def ParseLogFile( fLog ):
 	while( idx < len( logBytes ) ):
 		crcBytes = logBytes[ idx : idx + 4 ]
 		size = (logBytes[ idx + 5 ] << 8) + logBytes[ idx + 4 ]
-		type = logBytes[ 6 ]
-		blockBytes = logBytes[ idx + 7 : idx + 7 + size ]
-		seq = int.from_bytes( blockBytes[ : 8 ], 'little' )
-		count = int.from_bytes( blockBytes[ 8 : (8+4) ], 'little' )
+		type = logBytes[ idx + 6 ]
+		if type == 1 or type == 2:
+			blockBytes = logBytes[ idx + 7 : idx + 7 + size ]
+			seq = int.from_bytes( blockBytes[ : 8 ], 'little' )
+			count = int.from_bytes( blockBytes[ 8 : (8+4) ], 'little' )
+			stream = io.BytesIO( blockBytes[ 12 : ] )
+		else:	# elif type == 3 or type == 4:
+			stream = io.BytesIO( logBytes[ idx + 7 : idx + 7 + size ] )
+
 		print( 'Log Block at ' + str( idx ) )
 		print( '  TYPE = ' + str( type ) + ', SEQ = ' + str( seq ) + ', COUNT = ' + str( count ) )
 
-		stream = io.BytesIO( blockBytes[ 12 : ] )
 		for i in range( count ):
-			st = stream.read( 1 )[0]
+			b = stream.read( 1 )
+			if len( b ) == 0:
+				count = count - i
+				break
+			st = b[0]
 			keyLen = varint.decode_stream( stream )
 			keyBytes = stream.read( keyLen )
 			if st == 1:
@@ -62,6 +70,7 @@ def ParseLogFile( fLog ):
 				valLen = 0
 				valBytes = b'';
 			kvPair[ keyBytes ] = [ st, seq, valBytes ]
+			seq = seq + 1
 			if st == 1:
 				print( '    [O] KEY = ' + keyBytes.decode( 'utf-8' ) )
 			else:
@@ -152,6 +161,7 @@ def DumpBlock( title, subtitle, kvp, ldbBytes ):
 					print( '      VAL = ' + ''.join( '{:02x}'.format(x) for x in kvpBlock[ blkKey ][ IDX_VALUE ] ) )
 			else:
 				print( '      VAL = <None>' )
+			print( '      SEQ = ' + str( kvpBlock[ blkKey ][ IDX_KEY_SEQ ] ) )
 
 		print( '' )
 
@@ -190,7 +200,9 @@ def ParseLdbFile( fLdb ):
 	return blkkvp
 
 def ParseLdbDir( dirLdb ):
+	kvCollect = dict()
 	kvPair = dict()
+
 	logs = glob.glob( os.path.join( dirLdb, LOG_FILE_NAME_GLOB ) )
 	if( len( logs ) == 0 ):
 		logs = glob.glob( os.path.join( dirLdb, 'leveldb', LOG_FILE_NAME_GLOB ) )
@@ -198,10 +210,9 @@ def ParseLdbDir( dirLdb ):
 		kvp = ParseLogFile( fLog )
 		for k in kvp:
 			if kvp[ k ][ IDX_KEY_ST ] == 1:
-				if len( kvp[ k ][ IDX_VALUE ] ) > 0 and kvp[ k ][ IDX_VALUE ][0] == 1:
-					kvPair[ k.decode( 'utf-8' ) ] = kvp[ k ][ IDX_VALUE ][ 1 : ].decode( 'utf-8' );
-				else:
-					kvPair[ k.decode( 'utf-8' ) ] = kvp[ k ][ IDX_VALUE ];
+				if k in kvCollect and kvCollect[ k ][ IDX_KEY_SEQ ] > kvp[ k ][ IDX_KEY_SEQ ]:
+					continue
+				kvCollect[ k ] = kvp[ k ]
 
 	ldbs = glob.glob( os.path.join( dirLdb, LDB_FILE_NAME_GLOB ) )
 	if( len( ldbs ) == 0 ):
@@ -210,10 +221,15 @@ def ParseLdbDir( dirLdb ):
 		kvp = ParseLdbFile( fLdb )
 		for k in kvp:
 			if kvp[ k ][ IDX_KEY_ST ] == 1:
-				if len( kvp[ k ][ IDX_VALUE ] ) > 0 and kvp[ k ][ IDX_VALUE ][0] == 1:
-					kvPair[ k.decode( 'utf-8' ) ] = kvp[ k ][ IDX_VALUE ][ 1 : ].decode( 'utf-8' );
-				else:
-					kvPair[ k.decode( 'utf-8' ) ] = kvp[ k ][ IDX_VALUE ];
+				if k in kvCollect and kvCollect[ k ][ IDX_KEY_SEQ ] > kvp[ k ][ IDX_KEY_SEQ ]:
+					continue
+				kvCollect[ k ] = kvp[ k ]
+
+	for k in kvCollect:
+		if len( kvCollect[ k ][ IDX_VALUE ] ) > 0 and kvCollect[ k ][ IDX_VALUE ][0] == 1:
+			kvPair[ k.decode( 'utf-8' ) ] = kvCollect[ k ][ IDX_VALUE ][ 1 : ].decode( 'utf-8' );
+		else:
+			kvPair[ k.decode( 'utf-8' ) ] = kvCollect[ k ][ IDX_VALUE ];
 
 	return kvPair
 
