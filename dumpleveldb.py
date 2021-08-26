@@ -17,9 +17,9 @@ LDB_FOOTER_BYTES = bytes( [ 0x57, 0xFB, 0x80, 0x8B, 0x24, 0x75, 0x47, 0xDB ] )
 LDB_FILE_NAME_GLOB = "*.ldb"
 LOG_FILE_NAME_GLOB = "*.log"
 
-IDX_KEY_ST = 0
+IDX_VALUE = 0
 IDX_KEY_SEQ = 1
-IDX_VALUE = 2
+IDX_KEY_ST = 2
 
 gShowMsg = False
 
@@ -41,50 +41,56 @@ def ParseLogFile( fLog ):
 	idx = 0
 	kvPair = dict()
 	while( idx < len( logBytes ) ):
+
+		print( 'Log Block at ' + str( idx ) )
+
 		crcBytes = logBytes[ idx : idx + 4 ]
 		size = (logBytes[ idx + 5 ] << 8) + logBytes[ idx + 4 ]
 		type = logBytes[ idx + 6 ]
+
 		if type == 1 or type == 2:
 			blockBytes = logBytes[ idx + 7 : idx + 7 + size ]
 			seq = int.from_bytes( blockBytes[ : 8 ], 'little' )
 			count = int.from_bytes( blockBytes[ 8 : (8+4) ], 'little' )
 			stream = io.BytesIO( blockBytes[ 12 : ] )
-		else:	# elif type == 3 or type == 4:
-			stream = io.BytesIO( logBytes[ idx + 7 : idx + 7 + size ] )
+			print( '  TYPE = ' + str( type ) + ', SEQ = ' + str( seq ) + ', COUNT = ' + str( count ) )
+		elif type == 3 or type == 4:
+			stream.seek( 0, io.SEEK_END )
+			stream.write( logBytes[ idx + 7 : idx + 7 + size ] )
+			stream.seek( 0, io.SEEK_SET )
+			print( '  TYPE = ' + str( type )  )
+		else:
+			print( '  !!! WARNING !!! Unknown type: ' + str( type ) + ' (skip)' )
 
-		print( 'Log Block at ' + str( idx ) )
-		print( '  TYPE = ' + str( type ) + ', SEQ = ' + str( seq ) + ', COUNT = ' + str( count ) )
-
-		for i in range( count ):
-			b = stream.read( 1 )
-			if len( b ) == 0:
-				count = count - i
-				break
-			st = b[0]
-			keyLen = varint.decode_stream( stream )
-			keyBytes = stream.read( keyLen )
-			if st == 1:
-				valLen = varint.decode_stream( stream )
-				valBytes = stream.read( valLen )
-			else:
-				valLen = 0
-				valBytes = b'';
-			kvPair[ keyBytes ] = [ st, seq, valBytes ]
-			seq = seq + 1
-			if st == 1:
-				print( '    [O] KEY = ' + keyBytes.decode( 'utf-8' ) )
-			else:
-				print( '    [X] KEY = ' + keyBytes.decode( 'utf-8' ) )
-			if len( valBytes ) > 0:
-				if valBytes[ 0 ] == 1:
-					print( '        VAL = ' + valBytes[ 1 : ].decode( 'utf-8' ) )
+		if type == 1 or type == 4:
+			for i in range( count ):
+				b = stream.read( 1 )
+				st = b[0]
+				keyLen = varint.decode_stream( stream )
+				keyBytes = stream.read( keyLen )
+				if st == 1:
+					valLen = varint.decode_stream( stream )
+					valBytes = stream.read( valLen )
 				else:
-					print( '        VAL = ' + ''.join( '{:02x}'.format(x) for x in valBytes ) )
-			else:
-				print( '        VAL = <None>' )
+					valLen = 0
+					valBytes = b'';
+				kvPair[ keyBytes ] = [ valBytes, seq, st ]
+				seq = seq + 1
+				if st == 1:
+					print( '    [O] KEY = ' + keyBytes.decode( 'utf-8' ) )
+				else:
+					print( '    [X] KEY = ' + keyBytes.decode( 'utf-8' ) )
+				if len( valBytes ) > 0:
+					if valBytes[ 0 ] == 1:
+						print( '        VAL = ' + valBytes[ 1 : ].decode( 'utf-8' ) )
+					else:
+						print( '        VAL = ' + ''.join( '{:02x}'.format(x) for x in valBytes ) )
+				else:
+					print( '        VAL = <None>' )
+
+			print( '' )
 
 		idx = idx + 7 + size
-		print( '' )
 
 	return kvPair
 
@@ -114,7 +120,7 @@ def ParseBlock( blockBytes, compressed, crcBytes ):
 				else:
 					curKey = keyName
 	
-				kvPair[ curKey ] = [ keySt, keySequence, valData ]
+				kvPair[ curKey ] = [ valData, keySequence, keySt ]
 
 				if( keySequence == 0xffffffffffffff ):
 					bContinue = False
@@ -227,9 +233,9 @@ def ParseLdbDir( dirLdb ):
 
 	for k in kvCollect:
 		if len( kvCollect[ k ][ IDX_VALUE ] ) > 0 and kvCollect[ k ][ IDX_VALUE ][0] == 1:
-			kvPair[ k.decode( 'utf-8' ) ] = kvCollect[ k ][ IDX_VALUE ][ 1 : ].decode( 'utf-8' );
+			kvPair[ k.decode( 'utf-8' ) ] = [ kvCollect[ k ][ IDX_VALUE ][ 1 : ].decode( 'utf-8' ), kvCollect[ k ][ IDX_KEY_SEQ ] ]
 		else:
-			kvPair[ k.decode( 'utf-8' ) ] = kvCollect[ k ][ IDX_VALUE ];
+			kvPair[ k.decode( 'utf-8' ) ] = [ kvCollect[ k ][ IDX_VALUE ], kvCollect[ k ][ IDX_KEY_SEQ ] ];
 
 	return kvPair
 
